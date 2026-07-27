@@ -1,0 +1,10 @@
+# Place at <PORTAL_HOME>/connectors/<domain-id>/connector.yaml.
+domainId: alice
+connectorId: replace-with-platform-connector-id
+liteEndpoint: https://127.0.0.1:28081
+certDir: ./certs
+
+# Data files remain disabled until the node file service is deployed.
+fileService:
+  endpoint: http://127.0.0.1:8190
+  token: replace-with-file-service-token

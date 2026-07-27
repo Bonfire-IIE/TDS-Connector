@@ -1,0 +1,17 @@
+{
+  "name": "bonfire-connector-portal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bonfire-TDS 连接器门户（TS 单体仓库：web 前端 + server 后端，与 Kuscia Lite 同机部署的本地控制台）",
+  "workspaces": [
+    "web",
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace server & npm run dev --workspace web",
+    "dev:web": "npm run dev --workspace web",
+    "dev:server": "npm run dev --workspace server",
+    "build": "npm run build --workspace web && npm run build --workspace server",
+    "start": "node server/dist/index.js"
+  }
+}
