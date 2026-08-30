@@ -8,8 +8,17 @@ export interface ConnectorManifest {
   connectorId?: string;
   liteEndpoint?: string;
   certDir: string;
+  /**
+   * 本节点的外挂文件服务（由 Kuscia 调度的常驻服务，见 deploy/file-service）。
+   *
+   * endpoint 是**本机 Lite 的域网关**地址（发布到宿主机的 80 端口），不是服务
+   * 自己的地址——服务跑在 Kuscia 分配的动态端口上，只能经网关按 serviceHost
+   * 路由过去。
+   */
   fileService?: {
     endpoint: string;
+    /** 网关路由用的 Host，形如 filesvc-<domain>-http.<domain>.svc。 */
+    serviceHost?: string;
     token?: string;
   };
   manifestPath: string;
@@ -56,7 +65,11 @@ function parseManifest(file: string): ConnectorManifest {
     liteEndpoint: values.get("liteEndpoint") || undefined,
     certDir: path.resolve(base, certValue),
     fileService: endpoint
-      ? { endpoint: endpoint.replace(/\/+$/, ""), token: values.get("fileService.token") || undefined }
+      ? {
+          endpoint: endpoint.replace(/\/+$/, ""),
+          serviceHost: values.get("fileService.serviceHost") || undefined,
+          token: values.get("fileService.token") || undefined,
+        }
       : undefined,
     manifestPath: file,
   };

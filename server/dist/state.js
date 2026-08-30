@@ -34,58 +34,129 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadState = loadState;
-exports.saveState = saveState;
-/**
- * 门户本地状态持久化（设计见 design/connector-portal.md §8.5 / §9.3）。
- *
- * 门户接入(onboarding)后需跨重启记住"自身身份/接入态"，落**本地 JSON 文件**
- * （不上 DB，能用文件就不上库）。仅存路径引用，不拷贝 Lite 私钥/证书，
- * 不落数据源 AK/SK、不落平台会话 token。文件权限 0600（属门户运行用户）。
- *
- * 路径取 env PORTAL_STATE_FILE，dev 默认
- *   /home/bonfire-tds/src/connector_portal/.portal-state.json
- */
+exports.getPending = getPending;
+exports.savePending = savePending;
+exports.clearPending = clearPending;
+exports.saveProfile = saveProfile;
+exports.profilesForUser = profilesForUser;
+exports.selectedProfile = selectedProfile;
+exports.claimLegacyProfile = claimLegacyProfile;
+exports.selectProfile = selectProfile;
+exports.hasAnyProfile = hasAnyProfile;
+/** Portal 文件状态仓库：支持多连接器、按平台用户隔离选择与接入进度。 */
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
-/** 门户数据根：优先 PORTAL_DATA_DIR，否则用户主目录下 ~/.bonfire-connector（无需 /home 或 root 权限）。 */
 function dataDir() {
-    const v = process.env.PORTAL_DATA_DIR;
-    return v !== undefined && v !== ""
-        ? v
-        : path.join(os.homedir(), ".bonfire-connector");
+    return process.env.PORTAL_DATA_DIR || path.join(os.homedir(), ".bonfire-connector");
 }
 function stateFile() {
-    const v = process.env.PORTAL_STATE_FILE;
-    return v !== undefined && v !== ""
-        ? v
-        : path.join(dataDir(), "portal-state.json");
+    return process.env.PORTAL_STATE_FILE || path.join(dataDir(), "portal-state.json");
+}
+function emptyState() {
+    return { version: 2, connectors: {}, pending_by_user: {}, selected_by_user: {} };
+}
+function migrate(parsed) {
+    if (parsed.version === 2)
+        return parsed;
+    const old = parsed;
+    const next = emptyState();
+    if (old.onboarded && old.connector_id && old.domain_id) {
+        next.connectors[old.connector_id] = {
+            connector_id: old.connector_id,
+            domain_id: old.domain_id,
+            lite_kuscia_endpoint: old.lite_kuscia_endpoint,
+            lite_cert_dir: old.lite_cert_dir,
+        };
+    }
+    if (old.pending?.owner_username) {
+        next.pending_by_user[old.pending.owner_username] = old.pending;
+    }
+    return next;
 }
 let cache = null;
-/** 读取本地状态；文件缺失/损坏时回退为未接入。进程内缓存一次。 */
 function loadState() {
     if (cache)
         return cache;
     try {
-        const raw = fs.readFileSync(stateFile(), "utf-8");
-        const parsed = JSON.parse(raw);
-        cache = parsed && typeof parsed === "object" ? parsed : { onboarded: false };
+        cache = migrate(JSON.parse(fs.readFileSync(stateFile(), "utf-8")));
     }
     catch {
-        cache = { onboarded: false };
+        cache = emptyState();
     }
     return cache;
 }
-/**
- * 合并写入本地状态（浅合并 + 原子落盘，0600）。
- * 传 `pending: undefined` 可清除 pending（JSON.stringify 会丢弃 undefined 键）。
- */
-function saveState(patch) {
-    const next = { ...loadState(), ...patch };
+function persist(next) {
     cache = next;
     const file = stateFile();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(next, null, 2), { mode: 0o600 });
+    const temp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(next, null, 2), { mode: 0o600 });
+    fs.renameSync(temp, file);
     return next;
+}
+function getPending(username) {
+    return loadState().pending_by_user[username];
+}
+function savePending(username, pending) {
+    const st = loadState();
+    return persist({ ...st, pending_by_user: { ...st.pending_by_user, [username]: pending } });
+}
+function clearPending(username) {
+    const st = loadState();
+    const pending = { ...st.pending_by_user };
+    delete pending[username];
+    return persist({ ...st, pending_by_user: pending });
+}
+function saveProfile(username, profile) {
+    const st = loadState();
+    // Re-registering a connector with the same Kuscia domain creates a new
+    // platform connector ID.  The old local profile must not remain selectable:
+    // it points at a deleted control-plane object and, more subtly, at the same
+    // endpoint/certificate directory as the replacement deployment.
+    const connectors = { ...st.connectors };
+    for (const [connectorId, existing] of Object.entries(connectors)) {
+        if (connectorId !== profile.connector_id &&
+            existing.owner_username === username &&
+            existing.domain_id === profile.domain_id) {
+            delete connectors[connectorId];
+        }
+    }
+    return persist({
+        ...st,
+        connectors: { ...connectors, [profile.connector_id]: { ...profile, owner_username: username } },
+        selected_by_user: { ...st.selected_by_user, [username]: profile.connector_id },
+    });
+}
+function profilesForUser(username) {
+    return Object.values(loadState().connectors).filter((p) => p.owner_username === username);
+}
+function selectedProfile(username) {
+    const st = loadState();
+    const selected = st.selected_by_user[username];
+    return (selected && st.connectors[selected]) || profilesForUser(username)[0];
+}
+function claimLegacyProfile(username, connectorId) {
+    const st = loadState();
+    const profile = st.connectors[connectorId];
+    if (!profile || profile.owner_username)
+        return profile;
+    persist({
+        ...st,
+        connectors: { ...st.connectors, [connectorId]: { ...profile, owner_username: username } },
+        selected_by_user: { ...st.selected_by_user, [username]: connectorId },
+    });
+    return { ...profile, owner_username: username };
+}
+function selectProfile(username, connectorId) {
+    const st = loadState();
+    const profile = st.connectors[connectorId];
+    if (!profile || profile.owner_username !== username)
+        return undefined;
+    persist({ ...st, selected_by_user: { ...st.selected_by_user, [username]: connectorId } });
+    return profile;
+}
+function hasAnyProfile() {
+    return Object.keys(loadState().connectors).length > 0;
 }
 //# sourceMappingURL=state.js.map

@@ -22,6 +22,8 @@ export interface OnboardingState {
   connector_id?: string
   // 已提交注册、等待运营方审批时返回。
   pending?: { connector_id: string; kuscia_domain_id: string }
+  connectors?: Array<{ connector_id: string; domain_id: string }>
+  access_denied?: boolean
 }
 
 export interface RegisterBody extends NodeInfo {

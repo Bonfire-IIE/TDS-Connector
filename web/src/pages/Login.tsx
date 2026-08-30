@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Card, Form, Input, Button, message, Typography } from 'antd'
 import { UserOutlined, LockOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 
 const { Title, Text } = Typography
@@ -9,14 +10,16 @@ const { Title, Text } = Typography
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [loading, setLoading] = useState(false)
 
   const onFinish = async (v: { username: string; password: string }) => {
     setLoading(true)
     try {
-      await login(v.username, v.password)
+      const { switched } = await login(v.username, v.password)
+      if (switched) queryClient.clear()
       message.success('登录成功')
-      navigate('/status')
+      navigate(switched ? '/onboarding' : '/status')
     } catch (e: any) {
       message.error(e.response?.data?.message ?? e.response?.data?.detail ?? '登录失败')
     } finally {
@@ -25,19 +28,12 @@ export default function Login() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'linear-gradient(135deg, #1f1c2c 0%, #928dab 100%)',
-      }}
-    >
-      <Card style={{ width: 380, boxShadow: '0 8px 24px rgba(0,0,0,0.2)' }}>
+    <div className="auth-page">
+      <Card className="auth-card">
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div className="auth-brand">🔥</div>
           <Title level={3} style={{ marginBottom: 4 }}>
-            🔥 连接器门户
+            连接器门户
           </Title>
           <Text type="secondary">Bonfire-TDS 连接器本地控制台</Text>
         </div>

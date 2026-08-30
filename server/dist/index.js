@@ -48,7 +48,27 @@ const config_1 = require("./config");
 const routes_1 = require("./routes");
 const app = (0, express_1.default)();
 exports.app = app;
+if (config_1.config.trustProxy)
+    app.set("trust proxy", 1);
 app.use(express_1.default.json({ limit: "5mb" })); // 上限放宽以容纳证书上传(base64)
+app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    if (req.secure)
+        res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    if (req.path === "/portal/login" || req.path.startsWith("/portal/onboarding")) {
+        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("Pragma", "no-cache");
+    }
+    if (config_1.config.requireHttps && !req.secure && req.path !== "/health") {
+        res.status(426).json({ detail: "此服务仅允许通过 HTTPS 访问" });
+        return;
+    }
+    next();
+});
 // ---- API 路由 ----
 app.use("/portal", routes_1.router);
 // ---- 健康检查 ----

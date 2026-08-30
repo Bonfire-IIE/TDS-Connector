@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
 import {
   Card, Steps, Form, Input, InputNumber, Button, Alert, message, Typography,
-  Row, Col, Space, Spin, Result, Upload, Select, Segmented, Popover,
+  Row, Col, Space, Spin, Result, Upload, Select, Segmented, Tooltip,
 } from 'antd'
 import type { UploadFile } from 'antd'
 import {
-  UserOutlined, LockOutlined, DownloadOutlined, CopyOutlined, UploadOutlined,
+  UserOutlined, LockOutlined, CopyOutlined, DownloadOutlined, UploadOutlined,
   QuestionCircleOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useAuth } from '../auth/AuthContext'
 import {
   getOnboardingState, register, getDeployScript, finalize, uploadCerts, listConnectors,
@@ -294,21 +296,22 @@ function StepDeploy({ connectorId, onDone }: { connectorId: string; onDone: () =
           <Button size="small" icon={<CopyOutlined />} onClick={copyScript}>复制</Button>
           <Button size="small" icon={<DownloadOutlined />} onClick={downloadScript}>下载 .sh</Button>
         </Space>
-        <pre
-          style={{
-            background: '#1e1e1e',
-            color: '#d4d4d4',
-            padding: 16,
-            borderRadius: 6,
-            overflowX: 'auto',
+        <SyntaxHighlighter
+          language="bash"
+          style={oneDark}
+          showLineNumbers
+          wrapLongLines={false}
+          customStyle={{
+            margin: 0,
+            maxHeight: 420,
+            borderRadius: 8,
             fontSize: 13,
             lineHeight: 1.6,
-            margin: 0,
-            maxHeight: 360,
           }}
+          codeTagProps={{ style: { fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, monospace' } }}
         >
           {scriptText}
-        </pre>
+        </SyntaxHighlighter>
         <Paragraph type="secondary" style={{ marginTop: 8 }}>
           在连接器主机执行该脚本部署 Kuscia Lite；Lite 加入 master 后点击下方按钮继续。
         </Paragraph>
@@ -395,6 +398,9 @@ function StepBindExisting({ onDone }: { onDone: () => void }) {
   const conns = (connsQ.data ?? []).filter((c) =>
     ['approved', 'online', 'offline'].includes(c.status),
   )
+  const selected = Form.useWatch('connector_id', form)
+  const domain = conns.find((c) => c.id === selected)?.kuscia_domain_id || '<domain-id>'
+  const certCommand = `mkdir -p ./${domain}-certs && docker cp "$(docker ps -qf name=${domain} | head -n1)":/home/kuscia/var/certs/. ./${domain}-certs/ && ls -1 ./${domain}-certs`
 
   const onSelect = async (id: string) => {
     setDiscovery(null)
@@ -468,7 +474,7 @@ function StepBindExisting({ onDone }: { onDone: () => void }) {
         >
           <Input placeholder="https://127.0.0.1:28081" />
         </Form.Item>
-        {!discovery?.detected && <Form.Item label="上传 Lite 证书" required>
+        {!discovery?.detected && <Form.Item label={<Space size={4}>上传 Lite 证书<Tooltip overlayInnerStyle={{ background: '#fff', color: '#222', opacity: 1, boxShadow: '0 4px 16px rgba(0,0,0,.18)' }} title={<Space direction="vertical" style={{ color: '#222', maxWidth: 560 }}><Typography.Text style={{ color: '#222' }}>在运行 Kuscia Lite 的连接器主机执行：</Typography.Text><Typography.Text code style={{ color: '#222', whiteSpace: 'normal', wordBreak: 'break-all' }}>{certCommand}</Typography.Text><Typography.Text style={{ color: '#555' }}>将生成的证书文件上传到此处。</Typography.Text></Space>}><QuestionCircleOutlined style={{ color: '#1677ff', cursor: 'help' }} /></Tooltip></Space>} required>
           <Upload
             multiple
             beforeUpload={() => false}
@@ -534,11 +540,20 @@ export default function Onboarding() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f0f2f5', padding: '32px 16px' }}>
+    <div style={{ minHeight: '100vh', background: '#f4f6f8', padding: '32px 16px' }}>
       <div style={{ maxWidth: 920, margin: '0 auto' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Title level={3} style={{ marginBottom: 4 }}>🔥 连接器接入向导</Title>
           <Text type="secondary">首次使用需完成接入：登录 → 注册 → 部署 → 完成</Text>
+          {stateQ.data?.access_denied && (
+            <Alert
+              style={{ marginTop: 16, textAlign: 'left' }}
+              type="warning"
+              showIcon
+              message="当前账号不是本机已保存连接器的属主"
+              description="请选择并绑定当前账号自己的连接器，或注册新的连接器。"
+            />
+          )}
           {stateQ.data?.onboarded && <div style={{ marginTop: 8 }}><Button onClick={() => navigate('/status')}>返回当前连接器</Button></div>}
         </div>
         <Card>
@@ -552,7 +567,12 @@ export default function Onboarding() {
               ]}
             />
           </div>
-          <Steps current={current} items={items} style={{ marginBottom: 32 }} />
+          <Steps
+            current={current}
+            items={items}
+            onChange={setCurrent}
+            style={{ marginBottom: 32, cursor: 'pointer' }}
+          />
 
           {current === 0 && (
             <StepLogin onDone={() => setCurrent(1)} />
@@ -581,18 +601,6 @@ export default function Onboarding() {
             <StepBindExisting onDone={finishOnboarding} />
           )}
 
-          {/* 手动上一步/下一步：各步自身操作照旧，此处仅供来回浏览/跳转 */}
-          <div style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between' }}>
-            <Button disabled={current === 0} onClick={() => setCurrent((c) => Math.max(0, c - 1))}>
-              上一步
-            </Button>
-            <Button
-              disabled={current >= items.length - 1}
-              onClick={() => setCurrent((c) => Math.min(items.length - 1, c + 1))}
-            >
-              下一步
-            </Button>
-          </div>
         </Card>
       </div>
     </div>

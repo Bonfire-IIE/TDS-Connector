@@ -84,6 +84,10 @@ class PlatformClient {
     async login(username, password) {
         return this.request("POST", "/identity/login", { username, password });
     }
+    /** 由中心验签并返回当前 token 的真实主体；Portal 不信任前端提交的用户名。 */
+    async me() {
+        return this.request("GET", "/identity/me");
+    }
     // ---- 数据源目录（中心侧非密元数据）----
     async listDatasources(connectorId) {
         return this.request("GET", "/catalog/datasources", null, {
@@ -98,6 +102,14 @@ class PlatformClient {
     }
     async listResources(connectorId) {
         return this.request("GET", "/catalog/resources", null, { connector_id: connectorId });
+    }
+    async listOwnedConnectors() { return this.request("GET", "/connectors"); }
+    async listProjects(connectorId) {
+        return this.request("GET", "/projects", null, { connector_id: connectorId });
+    }
+    async getProject(id) { return this.request("GET", `/projects/${id}`); }
+    async syncAudit(connectorId, cursor) {
+        return this.request("GET", "/audit/sync", null, { connector_id: connectorId, cursor });
     }
     // ---- 连接器接入（onboarding；驱动中心 provision）----
     /** 在中心注册连接器（apply）；返回 connector（含 id / kuscia_domain_id）。 */

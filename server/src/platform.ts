@@ -91,6 +91,11 @@ export class PlatformClient {
     return this.request("POST", "/identity/login", { username, password });
   }
 
+  /** 由中心验签并返回当前 token 的真实主体；Portal 不信任前端提交的用户名。 */
+  async me(): Promise<any> {
+    return this.request("GET", "/identity/me");
+  }
+
   // ---- 数据源目录（中心侧非密元数据）----
   async listDatasources(connectorId: string): Promise<any> {
     return this.request("GET", "/catalog/datasources", null, {
@@ -111,6 +116,17 @@ export class PlatformClient {
 
   async listResources(connectorId: string): Promise<any> {
     return this.request("GET", "/catalog/resources", null, { connector_id: connectorId });
+  }
+
+  async listOwnedConnectors(): Promise<any> { return this.request("GET", "/connectors"); }
+
+  async listProjects(connectorId: string): Promise<any> {
+    return this.request("GET", "/projects", null, { connector_id: connectorId });
+  }
+  async getProject(id: string): Promise<any> { return this.request("GET", `/projects/${id}`); }
+
+  async syncAudit(connectorId: string, cursor?: string): Promise<any> {
+    return this.request("GET", "/audit/sync", null, { connector_id: connectorId, cursor });
   }
 
   // ---- 连接器接入（onboarding；驱动中心 provision）----

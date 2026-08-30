@@ -9,7 +9,7 @@ import * as os from "os";
 import * as path from "path";
 import * as dotenv from "dotenv";
 
-import { loadState } from "./state";
+import { requestIdentity } from "./requestIdentity";
 
 dotenv.config();
 
@@ -25,12 +25,27 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function bool(name: string, fallback: boolean): boolean {
+  const v = process.env[name];
+  if (v === undefined || v === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(v.toLowerCase());
+}
+
+function httpsMode(): boolean {
+  const mode = env("TRANSPORT_MODE", "http").toLowerCase();
+  // REQUIRE_HTTPS 保留为旧部署兼容开关；新部署只需切 TRANSPORT_MODE。
+  return mode === "https" || bool("REQUIRE_HTTPS", false);
+}
+
 export interface Config {
   portalDomainId: string;
   portalConnectorId: string;
   liteKusciaEndpoint: string;
   liteCertDir: string;
   storageRoot: string;
+  fileServiceEndpoint: string;
+  fileServiceServiceHost: string;
+  fileServiceToken: string;
   platformApiBase: string;
   masterEndpoint: string;
   port: number;
@@ -38,6 +53,8 @@ export interface Config {
   // 门户数据根：本地 state 与"部署脚本导出的 Lite 证书"的落点约定
   portalDataDir: string;
   portalHome: string;
+  requireHttps: boolean;
+  trustProxy: boolean;
 }
 
 export const config: Config = {
@@ -55,6 +72,17 @@ export const config: Config = {
 
   // 本地 LFS 存储卷根（localfs 数据源默认落点，仅展示/推导用）
   storageRoot: env("STORAGE_ROOT", "/home/kuscia/var/storage/data"),
+
+  // 外挂文件服务（deploy/file-service 部署的 Kuscia 常驻服务）。
+  // connector.yaml 的 fileService 段优先，这里是容器化部署用的等价 env——
+  // 在跑的门户容器全靠 env 配置，没有 PORTAL_HOME 下的 connector.yaml。
+  //
+  // fileServiceEndpoint 是**本机 Lite 的域网关**地址（宿主机上的 80 端口映射），
+  // 不是服务自己的地址：服务跑在 Kuscia 分配的动态端口上，只能经网关按
+  // serviceHost 路由过去。
+  fileServiceEndpoint: env("FILE_SERVICE_ENDPOINT", "").replace(/\/+$/, ""),
+  fileServiceServiceHost: env("FILE_SERVICE_SERVICE_HOST", ""),
+  fileServiceToken: env("FILE_SERVICE_TOKEN", ""),
 
   // 平台 API（HTTP，上报/读取中心侧数据源；调用时透传前端 Bearer）
   platformApiBase: env("PLATFORM_API_BASE", "http://127.0.0.1:8000/api/v1"),
@@ -75,6 +103,10 @@ export const config: Config = {
 
   // 安装根：连接器清单位于 <PORTAL_HOME>/connectors/<domain>/connector.yaml。
   portalHome: env("PORTAL_HOME", path.join(os.homedir(), ".bonfire-connector")),
+
+  // 生产必须由 TLS 反代接入；应用依据 X-Forwarded-Proto 拒绝明文认证请求。
+  requireHttps: httpsMode(),
+  trustProxy: bool("TRUST_PROXY", httpsMode()),
 };
 
 /**
@@ -101,19 +133,34 @@ export interface Identity {
  * routes / lite 客户端一律经此取身份，避免直接读 config 的静态默认值。
  */
 export function resolveIdentity(): Identity {
-  const st = loadState();
-  if (st.onboarded) {
-    return {
-      domainId: st.domain_id ?? config.portalDomainId,
-      connectorId: st.connector_id ?? config.portalConnectorId,
-      liteKusciaEndpoint: st.lite_kuscia_endpoint ?? config.liteKusciaEndpoint,
-      liteCertDir: st.lite_cert_dir ?? config.liteCertDir,
-    };
-  }
+  const scoped = requestIdentity();
+  if (scoped) return scoped;
+  const certPath = (p: string | undefined) => {
+    if (!p) return config.liteCertDir;
+    // state may have been written on the host before the portal was containerized;
+    // remap its persisted host data root to the mounted /data root.
+    const hostRoot = "/home/bonfire-tds/src/connector_portal/.data";
+    if (p.startsWith(hostRoot)) return path.join(config.portalDataDir, p.slice(hostRoot.length).replace(/^\/+/, ""));
+    return p;
+  };
   return {
     domainId: config.portalDomainId,
     connectorId: config.portalConnectorId,
     liteKusciaEndpoint: config.liteKusciaEndpoint,
     liteCertDir: config.liteCertDir,
+  };
+}
+
+export function identityFromProfile(profile: {
+  domain_id: string;
+  connector_id: string;
+  lite_kuscia_endpoint?: string;
+  lite_cert_dir?: string;
+}): Identity {
+  return {
+    domainId: profile.domain_id,
+    connectorId: profile.connector_id,
+    liteKusciaEndpoint: profile.lite_kuscia_endpoint || config.liteKusciaEndpoint,
+    liteCertDir: profile.lite_cert_dir || config.liteCertDir || deriveLiteCertDir(profile.domain_id),
   };
 }

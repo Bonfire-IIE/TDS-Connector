@@ -6,6 +6,8 @@ import { ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import App from './App'
 import { AuthProvider } from './auth/AuthContext'
+import { bonfireTheme } from './theme'
+import './styles.css'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
@@ -13,7 +15,7 @@ const queryClient = new QueryClient({
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider locale={zhCN} theme={bonfireTheme}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <AuthProvider>

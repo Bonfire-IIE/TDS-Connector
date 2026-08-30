@@ -4,7 +4,19 @@ connectorId: replace-with-platform-connector-id
 liteEndpoint: https://127.0.0.1:28081
 certDir: ./certs
 
-# Data files remain disabled until the node file service is deployed.
-fileService:
-  endpoint: http://127.0.0.1:8190
-  token: replace-with-file-service-token
+# 本节点的外挂文件服务（由 Kuscia 调度的常驻服务）。
+# 部署：bash deploy/file-service/deploy.sh <domain-id>
+# 脚本跑完会把下面三行原样打印出来，照抄即可。
+#
+# endpoint 是**本机 Lite 的域网关**地址（发布到宿主机的 80 端口），不是服务自己的
+# 地址——服务监听的是 Kuscia 动态分配的端口，只能经网关按 serviceHost 路由过去。
+#
+# serviceHost 可省略，省略时按部署脚本的命名规则推导为
+# filesvc-<domain-id>-http.<domain-id>.svc。
+#
+# 门户还会自动带上 Kuscia-Source 头（取自 domainId），不需要配置。
+#
+# fileService:
+#   endpoint: http://127.0.0.1:28083
+#   serviceHost: filesvc-alice-http.alice.svc
+#   token: replace-with-file-service-token

@@ -11,14 +11,31 @@ import * as fs from "fs";
 import * as path from "path";
 import { Router, Request, Response } from "express";
 
-import { config, resolveIdentity, deriveLiteCertDir } from "./config";
+import { config, resolveIdentity, deriveLiteCertDir, identityFromProfile } from "./config";
 import { KusciaError, LiteClient, getLiteClient } from "./lite";
 import { PlatformClient, PlatformError } from "./platform";
-import { loadState, saveState } from "./state";
+import {
+  claimLegacyProfile, clearPending, getPending, hasAnyProfile, loadState,
+  profilesForUser, savePending, saveProfile, selectedProfile, selectProfile,
+} from "./state";
 import { findConnectorManifest, requiredCertFiles } from "./connectorManifest";
-import { getStorageBackend, StorageUnavailableError } from "./storage";
+import { getStorageBackend, StorageRequestError, StorageUnavailableError } from "./storage";
+import { readAuditMirror, syncAuditMirror } from "./auditMirror";
+import { MAX_TAIL_LINES, pipeNodeLogSse, readNodeLogLines } from "./nodeLogs";
+import { authorizeBoundOwner, isConnectorOwner } from "./authorization";
+import { publicOnboardingState } from "./onboardingState";
+import { withRequestIdentity } from "./requestIdentity";
+
+const portalStartedAt = Date.now();
 
 export const router = Router();
+
+const downloadTickets = new Map<string, {
+  filePath: string;
+  expiresAt: number;
+  connectorId: string;
+}>();
+const DOWNLOAD_TICKET_TTL_MS = 30_000;
 
 function wrap(data: unknown): Record<string, unknown> {
   return { code: 0, message: "ok", data };
@@ -127,6 +144,27 @@ function sendError(res: Response, e: unknown): void {
   res.status(500).json({ detail: (e as Error)?.message ?? String(e) });
 }
 
+/**
+ * 文件类接口的错误映射。
+ *
+ * 两种情况值得与 500 区分开，否则前端只能显示"服务器错误"：
+ *  - 未配置 / 文件服务不可达 → 503，属于部署没做完或服务没起来，不是请求错。
+ *  - 文件服务自己返回的 4xx（403 越权、404 不存在、409 冲突）→ **原样透出**，
+ *    前端据此给出具体提示，而不是把"目录非空"也说成服务器错误。
+ */
+function sendFileError(res: Response, e: unknown): void {
+  if (e instanceof StorageUnavailableError) {
+    res.status(503).json({ detail: e.message });
+    return;
+  }
+  if (e instanceof StorageRequestError) {
+    const status = e.statusCode >= 400 && e.statusCode <= 599 ? e.statusCode : 502;
+    res.status(status).json({ detail: e.message });
+    return;
+  }
+  sendError(res, e);
+}
+
 // ---- 登录（代理平台）----
 router.post("/login", async (req: Request, res: Response) => {
   const body = (req.body || {}) as { username?: string; password?: string };
@@ -135,7 +173,76 @@ router.post("/login", async (req: Request, res: Response) => {
       body.username ?? "",
       body.password ?? ""
     );
-    res.json(wrap({ access_token: data?.access_token }));
+    res.json(wrap({ access_token: data?.access_token, switched: false }));
+  } catch (e) {
+    sendError(res, e);
+  }
+});
+
+/**
+ * 校验当前 token 是否属于 Portal 已绑定连接器的属主。
+ * 管理员在中心侧可查看连接器，但不能据此操作边缘节点的 Lite、文件、日志或证书。
+ */
+async function requireBoundOwner(req: Request): Promise<{ auth: string; user: any; connector: any; identity: ReturnType<typeof identityFromProfile> }> {
+  const auth = requireBearer(getAuthHeader(req));
+  const client = platform(auth);
+  const user = await client.me();
+  const username = String(user?.username ?? "");
+  let profile = selectedProfile(username);
+  if (profile && !profile.owner_username) {
+    const legacyConnector = await client.getConnector(profile.connector_id);
+    profile = isConnectorOwner(user, legacyConnector)
+      ? claimLegacyProfile(username, profile.connector_id)
+      : undefined;
+  }
+  // 旧单连接器文件没有 owner；仅在中心确认该用户确为属主后认领一次。
+  if (!profile) {
+    for (const candidate of Object.values(loadState().connectors).filter((p) => !p.owner_username)) {
+      const connector = await client.getConnector(candidate.connector_id);
+      if (isConnectorOwner(user, connector)) {
+        profile = claimLegacyProfile(username, candidate.connector_id);
+        break;
+      }
+    }
+  }
+  if (!profile && config.portalConnectorId && config.portalDomainId) {
+    const legacyConnector = await client.getConnector(config.portalConnectorId);
+    if (isConnectorOwner(user, legacyConnector) && legacyConnector?.kuscia_domain_id === config.portalDomainId) {
+      saveProfile(username, {
+        connector_id: config.portalConnectorId,
+        domain_id: config.portalDomainId,
+        lite_kuscia_endpoint: config.liteKusciaEndpoint,
+        lite_cert_dir: config.liteCertDir,
+      });
+      profile = selectedProfile(username);
+    }
+  }
+  if (!profile) throw new HttpError(403, "当前账号没有可管理的本地连接器，请先完成接入");
+  const id = identityFromProfile(profile);
+  const connector = await client.getConnector(id.connectorId);
+  const decision = authorizeBoundOwner(id, user, connector);
+  if (!decision.ok) throw new HttpError(decision.statusCode, decision.message);
+  return { auth, user, connector, identity: id };
+}
+
+async function requireConnectorOwner(auth: string, connectorId: string): Promise<{ user: any; connector: any }> {
+  const client = platform(auth);
+  const [user, connector] = await Promise.all([client.me(), client.getConnector(connectorId)]);
+  if (!isConnectorOwner(user, connector)) {
+    throw new HttpError(403, "当前账号不是该连接器属主，不能执行接入操作");
+  }
+  return { user, connector };
+}
+
+// 非 onboarding 的本地能力一律先执行租户守卫。登录和健康检查不经过该 Router 中间件。
+router.use(async (req: Request, res: Response, next) => {
+  if (req.path.startsWith("/onboarding/")) return next();
+  // 浏览器直接导航到下载 URL 时无法附带 Authorization；权限已在签发票据时校验，
+  // 兑换时再核对票据绑定的本机 connector 身份。
+  if (req.path === "/files/download") return next();
+  try {
+    const { identity } = await requireBoundOwner(req);
+    withRequestIdentity(identity, () => next());
   } catch (e) {
     sendError(res, e);
   }
@@ -172,6 +279,43 @@ router.get("/status", async (_req: Request, res: Response) => {
   );
 });
 
+router.get("/overview", async (req: Request, res: Response) => {
+  try {
+    const auth = requireBearer(getAuthHeader(req));
+    const id = resolveIdentity();
+    const [datasources, resources] = await Promise.all([
+      platform(auth).listDatasources(id.connectorId),
+      platform(auth).listResources(id.connectorId),
+    ]);
+    let online = false; try { online = await getLiteClient().nodeOnline(id.domainId); } catch {}
+    res.json(wrap({ connector_id: id.connectorId, domain_id: id.domainId, online,
+      datasource_count: Array.isArray(datasources) ? datasources.length : 0,
+      resource_count: Array.isArray(resources) ? resources.length : 0,
+      uptime_seconds: Math.floor((Date.now() - portalStartedAt) / 1000),
+      lite_endpoint: id.liteKusciaEndpoint }));
+  } catch (e) { sendError(res, e); }
+});
+
+router.get("/routes", async (req: Request, res: Response) => {
+  try {
+    const auth = requireBearer(getAuthHeader(req));
+    const id = resolveIdentity();
+    const connectors = await platform(auth).listOwnedConnectors();
+    const peers = (Array.isArray(connectors) ? connectors : []).filter((c: any) => c.id !== id.connectorId);
+    const routes = [];
+    for (const peer of peers) {
+      const route = await getLiteClient().queryRoute(id.domainId, peer.kuscia_domain_id);
+      if (route) routes.push({ source: id.domainId, destination: peer.kuscia_domain_id, connector_id: peer.id, connector_name: peer.name, status: route.status?.status ?? route.status ?? "Unknown", raw: route });
+    }
+    res.json(wrap(routes));
+  } catch (e) { sendError(res, e); }
+});
+
+router.delete("/routes/:destination", async (req: Request, res: Response) => {
+  try { requireBearer(getAuthHeader(req)); await getLiteClient().deleteRoute(resolveIdentity().domainId, req.params.destination); res.json(wrap({ deleted: req.params.destination })); }
+  catch (e) { sendError(res, e); }
+});
+
 // ---- 数据源：只读集合来自平台 ----
 router.get("/datasources", async (req: Request, res: Response) => {
   try {
@@ -192,11 +336,129 @@ router.get("/resources", async (req: Request, res: Response) => {
   } catch (e) { sendError(res, e); }
 });
 
+
+router.get("/projects", async (req: Request, res: Response) => {
+  try { const auth = requireBearer(getAuthHeader(req)); res.json(wrap(await platform(auth).listProjects(resolveIdentity().connectorId))); }
+  catch (e) { sendError(res, e); }
+});
+router.get("/projects/:projectId", async (req: Request, res: Response) => {
+  try { const auth = requireBearer(getAuthHeader(req)); res.json(wrap(await platform(auth).getProject(req.params.projectId))); }
+  catch (e) { sendError(res, e); }
+});
+
+router.get("/jobs/:jobId/log", async (req: Request, res: Response) => {
+  try { requireBearer(getAuthHeader(req)); res.json(wrap(await getLiteClient().queryLog(req.params.jobId, typeof req.query.task_id === 'string' ? req.query.task_id : undefined))); }
+  catch (e) { sendError(res, e); }
+});
+
+// ---- 本节点日志 ----
+//
+// 全部经本机 Lite 的 KusciaAPI 读取，门户进程不需要宿主机的容器权限。
+// Kuscia 的这组接口只返回本节点的日志，所以这里天然只能看到自己这台机器。
+// 日志含内部地址、证书路径与请求详情，与其它受保护接口同级，一律要求 Bearer。
+
+function queryString(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function requireLogPath(req: Request): string {
+  const p = queryString(req.query.path);
+  if (!p) throw new HttpError(400, "缺少 path 参数");
+  return p;
+}
+
+function logLines(req: Request, fallback: number): number {
+  const raw = Number(req.query.lines);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(Math.max(Math.trunc(raw), 1), MAX_TAIL_LINES);
+}
+
+router.get("/logs/files", async (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const kind = queryString(req.query.kind);
+    res.json(wrap(await getLiteClient().listNodeLogFiles(kind)));
+  } catch (e) {
+    sendError(res, e);
+  }
+});
+
+router.get("/logs/tail", async (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const path = requireLogPath(req);
+    const lines = logLines(req, 500);
+    const collected = await readNodeLogLines(getLiteClient(), {
+      path,
+      tailLines: lines,
+      keyword: queryString(req.query.keyword),
+    });
+    res.json(
+      wrap({
+        path,
+        requested_lines: lines,
+        truncated: collected.length >= lines,
+        lines: collected,
+      })
+    );
+  } catch (e) {
+    sendError(res, e);
+  }
+});
+
+router.get("/logs/stream", async (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const path = requireLogPath(req);
+    await pipeNodeLogSse(
+      getLiteClient(),
+      {
+        path,
+        tailLines: logLines(req, 200),
+        follow: true,
+        keyword: queryString(req.query.keyword),
+      },
+      req,
+      res
+    );
+  } catch (e) {
+    // pipeNodeLogSse 自己处理开流失败；能到这里说明鉴权或取客户端就失败了，
+    // 此时响应头还没发出去。
+    sendError(res, e);
+  }
+});
+
+router.get("/logs/download", async (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const path = requireLogPath(req);
+    const lines = logLines(req, MAX_TAIL_LINES);
+    const collected = await readNodeLogLines(getLiteClient(), { path, tailLines: lines });
+    const domain = resolveIdentity().domainId || "node";
+    const base = path.split("/").filter(Boolean).pop() ?? "log";
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${domain}-${base}"`);
+    res.send(collected.join("\n"));
+  } catch (e) {
+    sendError(res, e);
+  }
+});
+
+router.get("/audit/mirror", (_req: Request, res: Response) => res.json(wrap(readAuditMirror())));
+router.post("/audit/sync", async (req: Request, res: Response) => {
+  try {
+    const auth = requireBearer(getAuthHeader(req));
+    res.json(wrap(await syncAuditMirror(auth)));
+  } catch (e) { sendError(res, e); }
+});
+
 router.get("/files/status", async (_req: Request, res: Response) => {
   try { res.json(wrap(await getStorageBackend().status())); }
   catch (e) {
     if (e instanceof StorageUnavailableError) {
-      res.json(wrap({ available: false, backend: "remote", message: e.message }));
+      // status 是前端进页面就调的探测接口，配置没做完也要给一个可渲染的结果，
+      // 而不是抛错——页面据此显示"尚未就绪"而非报错弹窗。
+      res.json(wrap({ available: false, message: e.message }));
     } else sendError(res, e);
   }
 });
@@ -206,7 +468,7 @@ router.get("/files", async (req: Request, res: Response) => {
     requireBearer(getAuthHeader(req));
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     res.json(wrap(await getStorageBackend().list(relativePath)));
-  } catch (e) { sendError(res, e); }
+  } catch (e) { sendFileError(res, e); }
 });
 
 router.put("/files", async (req: Request, res: Response) => {
@@ -218,20 +480,78 @@ router.put("/files", async (req: Request, res: Response) => {
     const length = Number(req.headers["content-length"]) || undefined;
     await getStorageBackend().upload(directory, filename, req, length);
     res.json(wrap({ path: path.posix.join(directory, filename) }));
+  } catch (e) { sendFileError(res, e); }
+});
+
+// ---- 文件管理（建目录/删除/改名）----
+//
+// 文件服务的 4xx 由 sendFileError 原样透出：403 越权、404 不存在、409 冲突
+// （同名已存在、目录非空未带 recursive）都要让用户看到具体原因。
+
+router.post("/files/mkdir", async (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const relativePath = typeof req.body?.path === "string" ? req.body.path.trim() : "";
+    if (!relativePath) throw new HttpError(422, "缺少目录路径");
+    res.json(wrap(await getStorageBackend().mkdir(relativePath)));
+  } catch (e) { sendFileError(res, e); }
+});
+
+router.post("/files/delete", async (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const relativePath = typeof req.body?.path === "string" ? req.body.path.trim() : "";
+    // 空路径在节点侧是"存储根"，删根会清空整个数据目录；这里先挡一道，
+    // 不依赖节点的兜底。
+    if (!relativePath) throw new HttpError(422, "缺少路径");
+    const recursive = Boolean(req.body?.recursive);
+    await getStorageBackend().remove(relativePath, recursive);
+    res.json(wrap({ deleted: relativePath }));
+  } catch (e) { sendFileError(res, e); }
+});
+
+router.post("/files/rename", async (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const source = typeof req.body?.source === "string" ? req.body.source.trim() : "";
+    const destination = typeof req.body?.destination === "string" ? req.body.destination.trim() : "";
+    if (!source || !destination) throw new HttpError(422, "缺少源路径或目标路径");
+    res.json(wrap(await getStorageBackend().rename(source, destination)));
+  } catch (e) { sendFileError(res, e); }
+});
+
+router.post("/files/download-ticket", (req: Request, res: Response) => {
+  try {
+    requireBearer(getAuthHeader(req));
+    const relativePath = typeof req.body?.path === "string" ? req.body.path : "";
+    if (!relativePath) throw new HttpError(422, "缺少文件路径");
+    const ticket = crypto.randomBytes(24).toString("base64url");
+    downloadTickets.set(ticket, {
+      filePath: relativePath,
+      expiresAt: Date.now() + DOWNLOAD_TICKET_TTL_MS,
+      connectorId: resolveIdentity().connectorId,
+    });
+    res.json(wrap({ ticket, expires_in: DOWNLOAD_TICKET_TTL_MS / 1000 }));
   } catch (e) { sendError(res, e); }
 });
 
 router.get("/files/download", async (req: Request, res: Response) => {
   try {
-    requireBearer(getAuthHeader(req));
-    const relativePath = typeof req.query.path === "string" ? req.query.path : "";
-    if (!relativePath) throw new HttpError(422, "缺少文件路径");
+    const ticket = typeof req.query.ticket === "string" ? req.query.ticket : "";
+    const grant = downloadTickets.get(ticket);
+    downloadTickets.delete(ticket);
+    if (!grant || grant.expiresAt < Date.now()) throw new HttpError(401, "下载凭证无效或已过期");
+    if (!grant.connectorId || grant.connectorId !== resolveIdentity().connectorId) {
+      throw new HttpError(401, "下载凭证不属于当前连接器");
+    }
+    const relativePath = grant.filePath;
     const file = await getStorageBackend().download(relativePath);
     res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(path.posix.basename(relativePath))}`);
     if (file.contentType) res.setHeader("Content-Type", file.contentType);
     if (file.contentLength) res.setHeader("Content-Length", file.contentLength);
+    file.stream.on("error", () => { if (!res.headersSent) res.status(502).end(); else res.destroy(); });
     file.stream.pipe(res);
-  } catch (e) { sendError(res, e); }
+  } catch (e) { sendFileError(res, e); }
 });
 
 // ---- 数据源：创建（本机 Lite 建源 + 上报平台非密元数据）----
@@ -340,31 +660,36 @@ interface OnboardingFinalize {
   } | null;
 }
 
-// ---- 接入态（可不校验 Bearer）----
+// ---- 接入态 ----
 // 有 state 时按 state；无 state 但 env 已配连接器身份，视为 onboarded（兼容 alice env 实例）。
-router.get("/onboarding/state", (_req: Request, res: Response) => {
-  const st = loadState();
-  if (st.onboarded) {
-    res.json(
-      wrap({
-        onboarded: true,
-        domain_id: st.domain_id,
-        connector_id: st.connector_id,
-        pending: st.pending,
-      })
-    );
-    return;
+router.get("/onboarding/state", async (req: Request, res: Response) => {
+  try {
+    const envConfigured = Boolean(config.portalDomainId && config.portalConnectorId);
+    const onboarded = Boolean(hasAnyProfile() || envConfigured);
+
+    // 登录页门禁需要在拿到 token 前判断走登录还是接入向导。匿名请求只返回布尔值，
+    // 不暴露 connector/domain/pending；带 token 后才校验属主并返回详情。
+    if (!getAuthHeader(req)) {
+      res.json(wrap(publicOnboardingState(onboarded)));
+      return;
+    }
+
+    const auth = requireBearer(getAuthHeader(req));
+    const user = await platform(auth).me();
+    const username = String(user?.username ?? "");
+    const profile = selectedProfile(username);
+    const pending = getPending(username);
+    res.json(wrap({
+      onboarded: Boolean(profile),
+      domain_id: profile?.domain_id,
+      connector_id: profile?.connector_id,
+      pending,
+      connectors: profilesForUser(username),
+      access_denied: onboarded && !profile,
+    }));
+  } catch (e) {
+    sendError(res, e);
   }
-  // 无接入 state：若 env 已配置连接器身份（如 alice），兼容视为已接入
-  const envConfigured = Boolean(config.portalDomainId && config.portalConnectorId);
-  res.json(
-    wrap({
-      onboarded: envConfigured,
-      domain_id: envConfigured ? config.portalDomainId : undefined,
-      connector_id: envConfigured ? config.portalConnectorId : undefined,
-      pending: st.pending,
-    })
-  );
 });
 
 // ---- 注册（驱动中心 provision：apply）----
@@ -384,7 +709,7 @@ router.get("/onboarding/discover", async (req: Request, res: Response) => {
     const auth = requireBearer(getAuthHeader(req));
     const connectorId = typeof req.query.connector_id === "string" ? req.query.connector_id : "";
     if (!connectorId) throw new HttpError(422, "缺少 connector_id");
-    const connector = await platform(auth).getConnector(connectorId);
+    const { connector } = await requireConnectorOwner(auth, connectorId);
     const domain = String(connector?.kuscia_domain_id ?? "");
     const manifest = findConnectorManifest(domain);
     if (!manifest) return void res.json(wrap({ detected: false, domain_id: domain, message: "未发现 connector.yaml" }));
@@ -404,6 +729,7 @@ router.post("/onboarding/register", async (req: Request, res: Response) => {
   try {
     const auth = requireBearer(getAuthHeader(req));
     const body = (req.body || {}) as OnboardingRegister;
+    const owner = await platform(auth).me();
     const connector = await platform(auth).registerConnector({
       name: body.name,
       org_name: body.org_name ?? null,
@@ -417,12 +743,14 @@ router.post("/onboarding/register", async (req: Request, res: Response) => {
     });
     // 记住待接入连接器（onboarded 仍 false，待 finalize 收尾）；
     // 存 lite_api_port 供 finalize 推导本地 Lite endpoint。
-    saveState({
-      pending: {
+    const username = String(owner?.username ?? "");
+    if (!username) throw new HttpError(401, "无法识别当前用户");
+    savePending(username, {
         connector_id: connector?.id,
         kuscia_domain_id: connector?.kuscia_domain_id ?? body.kuscia_domain_id,
+        lite_api_endpoint: body.lite_api_endpoint,
         lite_api_port: body.lite_api_port,
-      },
+        owner_username: username,
     });
     res.json(wrap(connector));
   } catch (e) {
@@ -438,6 +766,7 @@ router.get("/onboarding/deploy-script", async (req: Request, res: Response) => {
     if (typeof connectorId !== "string" || connectorId === "") {
       throw new HttpError(422, "缺少 connector_id 查询参数");
     }
+    await requireConnectorOwner(auth, connectorId);
     const info = await platform(auth).getDeploy(connectorId);
     const domain = String(info?.kuscia_domain_id ?? "");
     // 门户接入附加步骤：把 Lite 证书**取出到本地目录**，供用户在门户“上传证书”框上传。
@@ -488,14 +817,14 @@ router.post("/onboarding/upload-certs", async (req: Request, res: Response) => {
     if (names.length === 0) throw new HttpError(422, "未提供证书文件");
 
     // 解析目标域：pending 优先，否则回中心查询
-    const st = loadState();
+    const { user: currentUser, connector } = await requireConnectorOwner(auth, connectorId);
+    const pending = getPending(String(currentUser?.username ?? ""));
     let domain =
-      st.pending && st.pending.connector_id === connectorId
-        ? st.pending.kuscia_domain_id
+      pending && pending.connector_id === connectorId
+        ? pending.kuscia_domain_id
         : undefined;
     if (!domain) {
-      const conn = await platform(auth).getConnector(connectorId);
-      domain = conn?.kuscia_domain_id;
+      domain = connector?.kuscia_domain_id;
     }
     if (!domain) throw new HttpError(422, "无法确定连接器域");
 
@@ -528,14 +857,15 @@ router.post("/onboarding/finalize", async (req: Request, res: Response) => {
     }
 
     // 解析目标域：优先取 pending，否则回中心查询
-    const st = loadState();
+    const { user: currentUser, connector } = await requireConnectorOwner(auth, connectorId);
+    const username = String(currentUser?.username ?? "");
+    const pending = getPending(username);
     let domain =
-      st.pending && st.pending.connector_id === connectorId
-        ? st.pending.kuscia_domain_id
+      pending && pending.connector_id === connectorId
+        ? pending.kuscia_domain_id
         : undefined;
     if (!domain) {
-      const conn = await platform(auth).getConnector(connectorId);
-      domain = conn?.kuscia_domain_id;
+      domain = connector?.kuscia_domain_id;
     }
     if (!domain) {
       throw new HttpError(422, "无法确定连接器域，请确认 connector_id 正确");
@@ -543,23 +873,32 @@ router.post("/onboarding/finalize", async (req: Request, res: Response) => {
 
     // 按约定推导 Lite 位置，用户无需手填：
     //   证书目录 = <PORTAL_DATA_DIR>/lite/<域>/certs（部署脚本已把 Lite 证书导出到此）
-    //   endpoint = https://127.0.0.1:<注册时选定的 KusciaAPI 端口>
+    //   endpoint = <注册时填写的物理地址>:<Lite KusciaAPI 端口>（支持跨机）
     const manifest = findConnectorManifest(domain);
     const discoveredCerts = manifest ? requiredCertFiles(manifest.certDir) : null;
     const certDir = discoveredCerts?.complete ? manifest!.certDir : deriveLiteCertDir(domain);
-    // endpoint：已注册连接器路径显式指定（body.lite_kuscia_endpoint）；
-    // 新注册路径按注册时选定的 KusciaAPI 端口推导 https://127.0.0.1:<port>。
+    // endpoint：已注册连接器路径可显式指定；新注册路径使用登记的物理地址和端口。
     let liteEndpoint = body.lite_kuscia_endpoint || manifest?.liteEndpoint;
     if (!liteEndpoint) {
-      let apiPort: number | undefined =
-        st.pending && st.pending.connector_id === connectorId
-          ? st.pending.lite_api_port
+      let apiBase: string | undefined =
+        pending && pending.connector_id === connectorId
+          ? pending.lite_api_endpoint
           : undefined;
-      if (!apiPort) {
-        const conn2 = await platform(auth).getConnector(connectorId);
-        apiPort = conn2?.lite_api_port;
+      let apiPort: number | undefined =
+        pending && pending.connector_id === connectorId
+          ? pending.lite_api_port
+          : undefined;
+      if (!apiBase || !apiPort) {
+        apiBase = apiBase || connector?.lite_api_endpoint;
+        apiPort = connector?.lite_api_port;
       }
-      liteEndpoint = `https://127.0.0.1:${apiPort ?? 28081}`;
+      const base = String(apiBase || "https://127.0.0.1")
+        .replace(/^(https?):\/+/, "$1://")
+        .replace(/\/+$/, "");
+      // 注册表单约定 lite_api_endpoint 不含 API 端口；若用户已显式带端口则原样使用。
+      liteEndpoint = /^https?:\/\/[^/]+:\d+$/.test(base)
+        ? base
+        : `${base}:${apiPort ?? 28081}`;
     }
 
     // ① 用本机 Lite 证书构 LiteClient 探活（读证书失败/不可达 -> 502）
@@ -579,14 +918,13 @@ router.post("/onboarding/finalize", async (req: Request, res: Response) => {
     }
 
     // ③ 落本地状态：标记 onboarded，清除 pending
-    saveState({
-      onboarded: true,
+    saveProfile(username, {
       domain_id: domain,
       connector_id: connectorId,
       lite_kuscia_endpoint: liteEndpoint,
       lite_cert_dir: certDir,
-      pending: undefined,
     });
+    clearPending(username);
 
     res.json(wrap({ onboarded: true, connector_id: connectorId, domain_id: domain }));
   } catch (e) {

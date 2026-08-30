@@ -1,0 +1,45 @@
+:root { color: #172033; background: #10182b; font-synthesis: none; }
+* { box-sizing: border-box; }
+html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
+body { background: #10182b; }
+.app-shell, .app-shell > .ant-layout { background: #10182b !important; }
+.app-sider { background: #10182b !important; padding: 0 10px 64px; }
+.app-sider .ant-layout-sider-trigger { inset-inline-start: 10px; bottom: 12px; height: 40px; line-height: 40px; color: #9eabc1; background: #18233a; border: 1px solid rgba(255,255,255,.06); border-radius: 8px; transition: width .2s, color .2s, background .2s, border-color .2s; }
+.app-sider:not(.ant-layout-sider-collapsed) .ant-layout-sider-trigger { width: 212px !important; }
+.app-sider.ant-layout-sider-collapsed .ant-layout-sider-trigger { width: 56px !important; }
+.app-sider .ant-layout-sider-trigger:hover { color: #fff; background: #283654; border-color: rgba(255,255,255,.10); }
+.app-sider .ant-layout-sider-trigger .anticon { font-size: 14px; }
+.brand { height: 64px; display: flex; align-items: center; gap: 10px; padding: 0 10px; color: #fff; overflow: hidden; white-space: nowrap; }
+.brand-mark { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 10px; display: grid; place-items: center; background: linear-gradient(145deg, #ff7a45, #e8431f); box-shadow: 0 6px 18px rgba(232,67,31,.28); }
+.brand-copy { display: flex; flex-direction: column; line-height: 1.15; font-weight: 700; letter-spacing: -.2px; }
+.brand-copy small { margin-top: 4px; color: #8f9bb3; font-size: 10px; font-weight: 500; letter-spacing: .8px; text-transform: uppercase; }
+.app-menu { border-inline-end: 0 !important; }
+.app-menu.ant-menu-inline .ant-menu-item, .app-menu.ant-menu-inline .ant-menu-submenu-title { margin-inline: 0; width: 100%; }
+.app-menu .ant-menu-submenu-title { color: #b8c1d5 !important; font-weight: 600; }
+.app-menu .ant-menu-item { color: #aeb8cc !important; }
+.app-menu .ant-menu-item-selected { color: #fff !important; font-weight: 600; }
+.app-header { height: 64px; line-height: normal; padding: 0 24px !important; background: #10182b !important; color: #fff; display: flex; align-items: center; justify-content: space-between; }
+.header-eyebrow { color: #7f8ba5; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.header-title { margin-top: 3px; color: #f8fafc; font-size: 15px; font-weight: 600; }
+.header-user { color: #dce3f0; cursor: pointer; padding: 6px 8px; border-radius: 8px; transition: background .2s; }
+.header-user:hover { background: rgba(255,255,255,.08); }
+.content-canvas { min-height: calc(100vh - 64px); margin: 0 !important; padding: 24px; overflow: auto; border-radius: 14px 0 0 0; background: #f4f6f8; }
+.content-canvas > .ant-space, .content-canvas > .ant-card, .content-canvas > div:not(.ant-spin-nested-loading) { max-width: 1600px; margin-inline: auto; }
+.ant-card { border-color: #e3e7ee; box-shadow: 0 1px 2px rgba(16,24,40,.025); }
+.ant-card-hoverable:hover { border-color: #cbd5e1; box-shadow: 0 8px 22px rgba(16,24,40,.07); }
+.ant-card .ant-card-head { border-bottom-color: #edf0f4; }
+.ant-table-wrapper .ant-table { border: 1px solid #e7eaf0; border-radius: 10px; overflow: hidden; }
+.ant-table-wrapper .ant-table-thead > tr > th { font-size: 12px; font-weight: 700; letter-spacing: .01em; }
+.ant-table-wrapper .ant-table-tbody > tr > td { border-bottom-color: #edf0f4; }
+.ant-tag { border-radius: 999px; padding-inline: 8px; font-weight: 500; }
+.content-canvas :is(.ant-tag-green, .ant-tag-cyan, .ant-tag-purple, .ant-tag-geekblue) { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
+.content-canvas :is(.ant-tag-orange, .ant-tag-gold) { color: #854d0e; background: #fefce8; border-color: #fde68a; }
+.content-canvas :is(.ant-tag-red, .ant-tag-volcano, .ant-tag-magenta) { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+.ant-alert { border-radius: 10px; }
+.ant-modal-content, .ant-drawer-content { border-radius: 12px; }
+.ant-btn { box-shadow: none !important; }
+.ant-input, .ant-input-affix-wrapper, .ant-select-selector, .ant-input-number { border-color: #d8dde6 !important; }
+.auth-page { min-height: 100vh; display: grid; place-items: center; padding: 32px 16px; background: radial-gradient(circle at 75% 20%, rgba(37,99,235,.22), transparent 30%), radial-gradient(circle at 15% 85%, rgba(232,67,31,.16), transparent 28%), #10182b; }
+.auth-card { width: min(400px, 100%); border: 1px solid rgba(255,255,255,.12) !important; box-shadow: 0 24px 60px rgba(0,0,0,.30) !important; }
+.auth-brand { width: 46px; height: 46px; margin: 0 auto 14px; border-radius: 13px; display: grid; place-items: center; color: white; font-size: 22px; background: linear-gradient(145deg, #ff7a45, #e8431f); }
+@media (max-width: 768px) { .content-canvas { padding: 16px; border-radius: 10px 0 0 0; } .app-header { padding: 0 16px !important; } .header-eyebrow { display: none; } }

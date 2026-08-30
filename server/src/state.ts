@@ -1,74 +1,161 @@
-/**
- * 门户本地状态持久化（设计见 design/connector-portal.md §8.5 / §9.3）。
- *
- * 门户接入(onboarding)后需跨重启记住"自身身份/接入态"，落**本地 JSON 文件**
- * （不上 DB，能用文件就不上库）。仅存路径引用，不拷贝 Lite 私钥/证书，
- * 不落数据源 AK/SK、不落平台会话 token。文件权限 0600（属门户运行用户）。
- *
- * 路径取 env PORTAL_STATE_FILE，dev 默认
- *   /home/bonfire-tds/src/connector_portal/.portal-state.json
- */
+/** Portal 文件状态仓库：支持多连接器、按平台用户隔离选择与接入进度。 */
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-/** 门户数据根：优先 PORTAL_DATA_DIR，否则用户主目录下 ~/.bonfire-connector（无需 /home 或 root 权限）。 */
 function dataDir(): string {
-  const v = process.env.PORTAL_DATA_DIR;
-  return v !== undefined && v !== ""
-    ? v
-    : path.join(os.homedir(), ".bonfire-connector");
+  return process.env.PORTAL_DATA_DIR || path.join(os.homedir(), ".bonfire-connector");
 }
 
-/** 接入进行中（已在中心注册、尚未 finalize）的临时记录。 */
+function stateFile(): string {
+  return process.env.PORTAL_STATE_FILE || path.join(dataDir(), "portal-state.json");
+}
+
 export interface OnboardingPending {
   connector_id: string;
   kuscia_domain_id: string;
-  // 注册时用户选定的 Lite KusciaAPI 端口；finalize 据此推导本地 Lite endpoint
+  lite_api_endpoint?: string;
   lite_api_port?: number;
+  owner_username: string;
 }
 
-/** 门户持久化状态。未接入时仅 {onboarded:false}。 */
+export interface ConnectorProfile {
+  connector_id: string;
+  domain_id: string;
+  owner_username?: string;
+  lite_kuscia_endpoint?: string;
+  lite_cert_dir?: string;
+}
+
 export interface PortalState {
-  onboarded: boolean;
+  version: 2;
+  connectors: Record<string, ConnectorProfile>;
+  pending_by_user: Record<string, OnboardingPending>;
+  selected_by_user: Record<string, string>;
+}
+
+interface LegacyState {
+  onboarded?: boolean;
   domain_id?: string;
   connector_id?: string;
   lite_kuscia_endpoint?: string;
   lite_cert_dir?: string;
-  pending?: OnboardingPending;
+  pending?: Omit<OnboardingPending, "owner_username"> & { owner_username?: string };
 }
 
-function stateFile(): string {
-  const v = process.env.PORTAL_STATE_FILE;
-  return v !== undefined && v !== ""
-    ? v
-    : path.join(dataDir(), "portal-state.json");
+function emptyState(): PortalState {
+  return { version: 2, connectors: {}, pending_by_user: {}, selected_by_user: {} };
+}
+
+function migrate(parsed: LegacyState | PortalState): PortalState {
+  if ((parsed as PortalState).version === 2) return parsed as PortalState;
+  const old = parsed as LegacyState;
+  const next = emptyState();
+  if (old.onboarded && old.connector_id && old.domain_id) {
+    next.connectors[old.connector_id] = {
+      connector_id: old.connector_id,
+      domain_id: old.domain_id,
+      lite_kuscia_endpoint: old.lite_kuscia_endpoint,
+      lite_cert_dir: old.lite_cert_dir,
+    };
+  }
+  if (old.pending?.owner_username) {
+    next.pending_by_user[old.pending.owner_username] = old.pending as OnboardingPending;
+  }
+  return next;
 }
 
 let cache: PortalState | null = null;
 
-/** 读取本地状态；文件缺失/损坏时回退为未接入。进程内缓存一次。 */
 export function loadState(): PortalState {
   if (cache) return cache;
   try {
-    const raw = fs.readFileSync(stateFile(), "utf-8");
-    const parsed = JSON.parse(raw) as PortalState;
-    cache = parsed && typeof parsed === "object" ? parsed : { onboarded: false };
+    cache = migrate(JSON.parse(fs.readFileSync(stateFile(), "utf-8")));
   } catch {
-    cache = { onboarded: false };
+    cache = emptyState();
   }
   return cache;
 }
 
-/**
- * 合并写入本地状态（浅合并 + 原子落盘，0600）。
- * 传 `pending: undefined` 可清除 pending（JSON.stringify 会丢弃 undefined 键）。
- */
-export function saveState(patch: Partial<PortalState>): PortalState {
-  const next: PortalState = { ...loadState(), ...patch };
+function persist(next: PortalState): PortalState {
   cache = next;
   const file = stateFile();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(next, null, 2), { mode: 0o600 });
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(next, null, 2), { mode: 0o600 });
+  fs.renameSync(temp, file);
   return next;
+}
+
+export function getPending(username: string): OnboardingPending | undefined {
+  return loadState().pending_by_user[username];
+}
+
+export function savePending(username: string, pending: OnboardingPending): PortalState {
+  const st = loadState();
+  return persist({ ...st, pending_by_user: { ...st.pending_by_user, [username]: pending } });
+}
+
+export function clearPending(username: string): PortalState {
+  const st = loadState();
+  const pending = { ...st.pending_by_user };
+  delete pending[username];
+  return persist({ ...st, pending_by_user: pending });
+}
+
+export function saveProfile(username: string, profile: ConnectorProfile): PortalState {
+  const st = loadState();
+  // Re-registering a connector with the same Kuscia domain creates a new
+  // platform connector ID.  The old local profile must not remain selectable:
+  // it points at a deleted control-plane object and, more subtly, at the same
+  // endpoint/certificate directory as the replacement deployment.
+  const connectors = { ...st.connectors };
+  for (const [connectorId, existing] of Object.entries(connectors)) {
+    if (
+      connectorId !== profile.connector_id &&
+      existing.owner_username === username &&
+      existing.domain_id === profile.domain_id
+    ) {
+      delete connectors[connectorId];
+    }
+  }
+  return persist({
+    ...st,
+    connectors: { ...connectors, [profile.connector_id]: { ...profile, owner_username: username } },
+    selected_by_user: { ...st.selected_by_user, [username]: profile.connector_id },
+  });
+}
+
+export function profilesForUser(username: string): ConnectorProfile[] {
+  return Object.values(loadState().connectors).filter((p) => p.owner_username === username);
+}
+
+export function selectedProfile(username: string): ConnectorProfile | undefined {
+  const st = loadState();
+  const selected = st.selected_by_user[username];
+  return (selected && st.connectors[selected]) || profilesForUser(username)[0];
+}
+
+export function claimLegacyProfile(username: string, connectorId: string): ConnectorProfile | undefined {
+  const st = loadState();
+  const profile = st.connectors[connectorId];
+  if (!profile || profile.owner_username) return profile;
+  persist({
+    ...st,
+    connectors: { ...st.connectors, [connectorId]: { ...profile, owner_username: username } },
+    selected_by_user: { ...st.selected_by_user, [username]: connectorId },
+  });
+  return { ...profile, owner_username: username };
+}
+
+export function selectProfile(username: string, connectorId: string): ConnectorProfile | undefined {
+  const st = loadState();
+  const profile = st.connectors[connectorId];
+  if (!profile || profile.owner_username !== username) return undefined;
+  persist({ ...st, selected_by_user: { ...st.selected_by_user, [username]: connectorId } });
+  return profile;
+}
+
+export function hasAnyProfile(): boolean {
+  return Object.keys(loadState().connectors).length > 0;
 }

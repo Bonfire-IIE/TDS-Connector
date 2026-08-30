@@ -81,7 +81,11 @@ function parseManifest(file) {
         liteEndpoint: values.get("liteEndpoint") || undefined,
         certDir: path.resolve(base, certValue),
         fileService: endpoint
-            ? { endpoint: endpoint.replace(/\/+$/, ""), token: values.get("fileService.token") || undefined }
+            ? {
+                endpoint: endpoint.replace(/\/+$/, ""),
+                serviceHost: values.get("fileService.serviceHost") || undefined,
+                token: values.get("fileService.token") || undefined,
+            }
             : undefined,
         manifestPath: file,
     };
