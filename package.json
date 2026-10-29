@@ -2,16 +2,15 @@
   "name": "bonfire-connector-portal",
   "private": true,
   "version": "0.1.0",
-  "description": "Bonfire-TDS 连接器门户（TS 单体仓库：web 前端 + server 后端，与 Kuscia Lite 同机部署的本地控制台）",
+  "description": "Bonfire-TDS 连接器门户（React 前端 + Python/FastAPI 后端）",
   "workspaces": [
-    "web",
-    "server"
+    "web"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace server & npm run dev --workspace web",
+    "dev": "python -m uvicorn bonfire_portal.main:app --host 0.0.0.0 --port ${PORT:-8100} --reload",
     "dev:web": "npm run dev --workspace web",
-    "dev:server": "npm run dev --workspace server",
-    "build": "npm run build --workspace web && npm run build --workspace server",
-    "start": "node server/dist/index.js"
+    "dev:server": "python -m uvicorn bonfire_portal.main:app --host 0.0.0.0 --port ${PORT:-8100} --reload",
+    "build": "npm run build --workspace web",
+    "start": "python -m uvicorn bonfire_portal.main:app --host 0.0.0.0 --port ${PORT:-8100} --workers 1"
   }
 }

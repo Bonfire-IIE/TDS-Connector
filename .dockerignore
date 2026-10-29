@@ -1,0 +1,11 @@
+.git
+.pytest_cache
+.build-v2
+UNKNOWN.egg-info
+**/node_modules
+server/dist
+**/__pycache__
+**/*.pyc
+python/.pytest_cache
+.data
+*.log

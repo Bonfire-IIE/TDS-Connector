@@ -1,0 +1,4 @@
+FROM bonfire/connector-portal:python-refactor-v8-ftp-tmp-path
+
+COPY python /app/python
+COPY web/dist /app/web/dist

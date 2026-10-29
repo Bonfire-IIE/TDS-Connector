@@ -1,1 +1,0 @@
-{"version":3,"file":"requestIdentity.js","sourceRoot":"","sources":["../src/requestIdentity.ts"],"names":[],"mappings":";;AAKA,kDAEC;AAED,0CAEC;AAXD,uDAAqD;AAGrD,MAAM,OAAO,GAAG,IAAI,oCAAiB,EAAY,CAAC;AAElD,SAAgB,mBAAmB,CAAI,QAAkB,EAAE,EAAW;IACpE,OAAO,OAAO,CAAC,GAAG,CAAC,QAAQ,EAAE,EAAE,CAAC,CAAC;AACnC,CAAC;AAED,SAAgB,eAAe;IAC7B,OAAO,OAAO,CAAC,QAAQ,EAAE,CAAC;AAC5B,CAAC"}

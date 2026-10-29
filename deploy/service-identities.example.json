@@ -1,0 +1,21 @@
+{
+  "users": {
+    "center-connector-id": {
+      "alice": {
+        "tenant_id": "tenant_a",
+        "connector_id": "edge_a",
+        "di": {"token_env": "PORTAL_ALICE_DI_TOKEN"},
+        "dr": {"token_env": "PORTAL_ALICE_DR_TOKEN"},
+        "ts": {"signer": "portal-alice", "secret_env": "PORTAL_ALICE_TS_SECRET", "roles": ["admin", "import", "import:unbound", "grant"]}
+      }
+    }
+  },
+  "machines": {
+    "center-connector-id": {
+      "tenant_id": "tenant_a",
+      "connector_id": "edge_a",
+      "di": {"token_env": "PORTAL_MACHINE_DI_TOKEN"},
+      "dr": {"token_env": "PORTAL_MACHINE_DR_TOKEN"}
+    }
+  }
+}

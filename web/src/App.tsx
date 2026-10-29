@@ -3,15 +3,18 @@ import { useQuery } from '@tanstack/react-query'
 import { Spin, Alert, Button } from 'antd'
 import MainLayout from './layouts/MainLayout'
 import ConnectorStatus from './pages/ConnectorStatus'
-import DataSources from './pages/DataSources'
+import DataSources from './services/Sources'
+import DataMovement from './services/Transfers'
 import Login from './pages/Login'
 import Onboarding from './pages/Onboarding'
 import DataFiles from './pages/DataFiles'
-import NodeResources from './pages/NodeResources'
-import Projects from './pages/Projects'
+import NodeResources from './services/Resources'
+import Transit from './services/Transit'
 import NodeLogs from './pages/NodeLogs'
 import RoutesPage from './pages/Routes'
-import RemoteExec from './pages/RemoteExec'
+import ProjectRuns from './pages/ProjectRuns'
+import PrivacyEngine from './pages/PrivacyEngine'
+import ComputationDelegations from './pages/ComputationDelegations'
 import { useAuth } from './auth/AuthContext'
 import { getOnboardingState } from './api/onboarding'
 
@@ -52,7 +55,9 @@ function OnboardingGate() {
 
   const onboarded = stateQ.data?.onboarded === true
 
-  if (!onboarded && location.pathname !== '/onboarding') {
+  // 登录页必须始终可见。把 /login 再重定向到自身会让 React Router
+  // 只渲染空的 <Navigate>，最终页面只剩全局背景。
+  if (!onboarded && location.pathname !== '/onboarding' && location.pathname !== '/login') {
     return <Navigate to={token ? '/onboarding' : '/login'} replace />
   }
   return <Outlet />
@@ -62,6 +67,7 @@ export default function App() {
   return (
     <Routes>
       <Route element={<OnboardingGate />}>
+        <Route index element={<Navigate to="/login" replace />} />
         <Route path="/login" element={<Login />} />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route
@@ -74,11 +80,15 @@ export default function App() {
           <Route path="/status" element={<ConnectorStatus />} />
           <Route path="/routes" element={<RoutesPage />} />
           <Route path="/datasources" element={<DataSources />} />
+          <Route path="/data-movement" element={<DataMovement />} />
+          <Route path="/transit-storage" element={<Transit />} />
           <Route path="/files" element={<DataFiles />} />
           <Route path="/resources" element={<NodeResources />} />
-          <Route path="/projects" element={<Projects />} />
           <Route path="/logs" element={<NodeLogs />} />
-          <Route path="/remote-exec" element={<RemoteExec />} />
+          <Route path="/project-runs" element={<ProjectRuns />} />
+          <Route path="/integrations/privacy-compute" element={<PrivacyEngine />} />
+          <Route path="/computation-delegations" element={<ComputationDelegations />} />
+          <Route path="/computation-delegations/:delegationId" element={<ComputationDelegations />} />
           <Route path="*" element={<Navigate to="/status" replace />} />
         </Route>
       </Route>

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Alert, Breadcrumb, Button, Card, Empty, Flex, Form, Input, Modal, Popconfirm, Segmented, Space, Spin, Table, Tag, Tooltip, Typography, Upload, message } from 'antd'
 import { AppstoreOutlined, ArrowLeftOutlined, CloudOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, FileOutlined, FolderAddOutlined, FolderOpenOutlined, HomeOutlined, ReloadOutlined, UnorderedListOutlined, UploadOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -29,7 +30,14 @@ const joinPath = (dir: string, name: string) => (dir ? `${dir}/${name}` : name)
 
 export default function DataFiles() {
   const qc = useQueryClient()
-  const [current, setCurrent] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedPath = searchParams.get('path') || ''
+  const safePath = !requestedPath.startsWith('/') && !requestedPath.includes('\\') && !requestedPath.split('/').some(part => part === '..' || part === '.')
+  const [current, setCurrentState] = useState(safePath ? requestedPath : '')
+  const setCurrent = (path: string) => {
+    setCurrentState(path)
+    setSearchParams(params => { if (path) params.set('path', path); else params.delete('path'); return params }, { replace: true })
+  }
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [folderOpen, setFolderOpen] = useState(false)
   const [renaming, setRenaming] = useState<FileEntry | null>(null)
@@ -37,7 +45,13 @@ export default function DataFiles() {
   const [renameForm] = Form.useForm<{ name: string }>()
 
   const status = useQuery({ queryKey: ['file-service-status'], queryFn: getFileServiceStatus })
-  const files = useQuery({ queryKey: ['data-files', current], queryFn: () => listFiles(current), enabled: status.data?.available === true })
+  const files = useQuery({
+    queryKey: ['data-files', current],
+    queryFn: () => listFiles(current),
+    enabled: status.data?.available === true,
+    refetchInterval: 5000,
+    refetchOnWindowFocus: true,
+  })
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['data-files', current] })
 
@@ -68,6 +82,10 @@ export default function DataFiles() {
   const parent = parts.slice(0, -1).join('/')
   const entries = useMemo(() => [...(files.data?.files ?? [])].sort((a, b) => {
     if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+    if (a.type === 'file') {
+      const modified = Date.parse(b.modified_at ?? '') - Date.parse(a.modified_at ?? '')
+      if (Number.isFinite(modified) && modified !== 0) return modified
+    }
     return a.name.localeCompare(b.name, 'zh-CN')
   }), [files.data])
   const crumbs = [
@@ -76,7 +94,7 @@ export default function DataFiles() {
   ]
 
   if (!status.isLoading && !status.data?.available) {
-    return <Card title="数据文件"><Alert type="warning" showIcon message="节点文件服务尚未就绪" description={`${status.data?.message ?? '未配置文件服务'}。请先完成节点文件服务部署。`} /></Card>
+    return <Card title="数据文件"><Alert type="warning" showIcon message="Lite 节点文件空间尚未就绪" description={`${status.data?.message ?? 'Lite KusciaAPI 不可用'}。请确认节点已启动并完成接入。`} /></Card>
   }
 
   const open = (entry: FileEntry) => entry.type === 'directory' ? setCurrent(entry.path) : downloadFile(entry.path, entry.name)
@@ -122,11 +140,13 @@ export default function DataFiles() {
       <Flex justify="space-between" align="center" wrap gap={16}>
         <Space size="middle"><CloudOutlined style={{ fontSize: 28, color: '#1677ff' }} /><div>
           <Title level={4} style={{ margin: 0 }}>数据文件</Title>
-          <Text type="secondary">Kuscia Lite 节点文件空间 · 节点外挂文件服务</Text>
+          <Text type="secondary">Kuscia Lite 节点文件空间 · Lite 内置文件服务</Text>
         </div></Space>
         {toolbar}
       </Flex>
       <Breadcrumb items={crumbs} style={{ marginTop: 20 }} />
+      {current && <Typography.Paragraph copyable={{ text: current }} style={{ marginTop: 12, marginBottom: 0 }}><Text type="secondary">当前目录：</Text><Text code>{current}</Text></Typography.Paragraph>}
+      {!safePath && <Alert style={{ marginTop: 12 }} type="warning" showIcon message="结果目录无效，已返回文件根目录。" />}
       {files.data?.truncated ? <Alert style={{ marginTop: 12 }} type="warning" showIcon message="该目录条目超过 5000 项，列表已被节点截断，未全部显示" /> : null}
     </div>
 

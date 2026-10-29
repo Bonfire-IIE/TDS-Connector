@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { TOKEN_KEY } from '../api/client'
 import { login as apiLogin } from '../api/portal'
 
@@ -11,11 +12,13 @@ interface AuthState {
 const AuthContext = createContext<AuthState>(null!)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queries = useQueryClient()
   // 标签页级会话：关闭标签页即清除，避免令牌长期驻留 localStorage。
   const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_KEY))
 
   const login = async (username: string, password: string) => {
     const { access_token, switched } = await apiLogin(username, password)
+    queries.clear()
     localStorage.removeItem(TOKEN_KEY)
     sessionStorage.setItem(TOKEN_KEY, access_token)
     setToken(access_token)
@@ -23,6 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
+    queries.clear()
     localStorage.removeItem(TOKEN_KEY)
     sessionStorage.removeItem(TOKEN_KEY)
     setToken(null)

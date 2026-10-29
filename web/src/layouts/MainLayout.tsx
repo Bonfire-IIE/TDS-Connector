@@ -1,15 +1,9 @@
 import { Layout, Menu, Dropdown, Avatar, Space } from 'antd'
 import type { MenuProps } from 'antd'
 import {
-  ApiOutlined,
-  DatabaseOutlined,
   UserOutlined,
   LogoutOutlined,
-  FolderOpenOutlined,
-  ProfileOutlined,
-  FileTextOutlined,
-  ApartmentOutlined,
-  ThunderboltOutlined,
+  FireOutlined,
 } from '@ant-design/icons'
 import { useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
@@ -17,22 +11,27 @@ import { useAuth } from '../auth/AuthContext'
 const { Header, Sider, Content } = Layout
 
 const menuItems: MenuProps['items'] = [
-  { key: 'connector', icon: <ApiOutlined />, label: '连接器管理', children: [
-    { key: '/status', label: '概览' }, { key: '/routes', icon: <ApartmentOutlined />, label: '路由管理' },
+  { key: 'connector', label: '连接器管理', children: [
+    { key: '/status', label: '概览' },
   ]},
-  { key: 'data', icon: <DatabaseOutlined />, label: '数据资源', children: [
-    { key: '/datasources', label: '数据源' }, { key: '/resources', icon: <ProfileOutlined />, label: '数据资源' }, { key: '/files', icon: <FolderOpenOutlined />, label: '文件管理' },
+  { key: 'data', label: '数据资源', children: [
+    { key: '/datasources', label: '数据源' }, { key: '/data-movement', label: '数据传输' }, { key: '/resources', label: '数据资源' }, { key: '/transit-storage', label: '数据中转仓' },
   ]},
-  { key: 'ops', icon: <FileTextOutlined />, label: '运行维护', children: [
-    { key: '/logs', label: '节点日志' }, { key: '/remote-exec', icon: <ThunderboltOutlined />, label: '远程执行' },
+  { key: 'integration', label: '隐私保护计算', children: [
+    { key: '/integrations/privacy-compute', label: '引擎状态' },
+    { key: '/project-runs', label: '项目运行' },
+    { key: '/computation-delegations', label: '计算委托' },
+    { key: '/files', label: '文件管理' },
+    { key: '/logs', label: '节点日志' },
   ]},
 ]
 
 const routeItems = (menuItems ?? []).flatMap((group: any) => group?.children ?? [])
 
 const pageTitles: Record<string, string> = {
-  '/status': '概览', '/routes': '路由管理', '/datasources': '数据源',
-  '/resources': '数据资源', '/files': '文件管理', '/logs': '节点日志', '/remote-exec': '远程执行',
+  '/transit-storage': '数据中转仓', '/status': '概览', '/routes': '路由管理', '/datasources': '数据源',
+  '/data-movement': '数据传输', '/resources': '数据资源', '/files': '文件管理', '/logs': '节点日志',
+  '/project-runs': '项目运行', '/integrations/privacy-compute': '引擎状态', '/computation-delegations': '计算委托',
 }
 
 function selectedMenuKey(pathname: string): string {
@@ -54,17 +53,17 @@ export default function MainLayout() {
 
   return (
     <Layout className="app-shell" style={{ minHeight: '100vh' }}>
-      <Sider className="app-sider" theme="dark" width={232} collapsedWidth={76} breakpoint="lg" collapsible>
+      <Sider className="app-sider" theme="light" width={248} collapsedWidth={76} breakpoint="lg" collapsible>
         <div className="brand">
-          <span className="brand-mark">🔥</span>
+          <span className="brand-mark" aria-hidden="true"><FireOutlined /></span>
           <span className="brand-copy">连接器门户<small>Bonfire Connector</small></span>
         </div>
         <Menu
           className="app-menu"
-          theme="dark"
+          theme="light"
           mode="inline"
           selectedKeys={[selectedKey]}
-          defaultOpenKeys={['connector', 'data', 'ops']}
+          defaultOpenKeys={['connector', 'data', 'integration']}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
         />

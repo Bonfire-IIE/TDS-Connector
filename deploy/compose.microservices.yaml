@@ -1,0 +1,63 @@
+# Separate project and volumes: never overlays the concurrent TS deployment.
+name: portal-microservices
+services:
+  portal:
+    image: ${PORTAL_IMAGE:?build the updated Portal image first}
+    ports: ["127.0.0.1:${PORTAL_HOST_PORT:-18100}:8100"]
+    env_file: [./portal.env]
+    environment:
+      PORTAL_DATA_DIR: /state
+      SERVICE_IDENTITIES_FILE: /run/config/portal-identities.json
+      DI_URL: http://di:8300
+      DR_URL: ${DR_URL:?existing independently deployed DR URL}
+      TS_URL: ${TS_URL:?TS contract acceptance target URL}
+      COMPUTE_TARGET_BINDING: kuscia
+    volumes:
+      - portal-state:/state
+      - ./service-identities.json:/run/config/portal-identities.json:ro
+    depends_on: [di]
+    restart: unless-stopped
+  di:
+    image: ${DI_IMAGE:?build updated DI image with compute extension first}
+    env_file: [./di.env]
+    environment: &di-environment
+      DATA_INTEGRATION_DATA_DIR: /var/lib/bonfire/cnt-service
+      DATA_INTEGRATION_LOCAL_ROOT: /data
+      SEATUNNEL_API_BASE: http://seatunnel:5801
+      CONNECTOR_AUTH_MODE: multi-tenant
+      CONNECTOR_IDENTITIES_FILE: /run/config/di-identities.json
+      DI_COMPUTE_TARGETS_FILE: /run/config/compute-targets.json
+    volumes: &di-volumes
+      - di-state:/var/lib/bonfire/cnt-service
+      - di-data:/data
+      - ./di-identities.json:/run/config/di-identities.json:ro
+      - ./compute-targets.json:/run/config/compute-targets.json:ro
+    restart: unless-stopped
+  seatunnel:
+    image: ${SEATUNNEL_IMAGE:?use the DI compatible SeaTunnel image}
+    command: [/opt/seatunnel/bin/seatunnel-cluster.sh]
+    volumes:
+      - di-data:/data
+    restart: unless-stopped
+  di-transfer-worker:
+    image: ${DI_IMAGE}
+    command: [python, -m, data_integration.transfer_worker]
+    env_file: [./di.env]
+    environment: *di-environment
+    volumes: *di-volumes
+    depends_on: [di]
+    healthcheck: {disable: true}
+    restart: unless-stopped
+  di-compute-worker:
+    image: ${DI_IMAGE}
+    command: [python, -m, data_integration.compute_worker]
+    env_file: [./di.env]
+    environment: *di-environment
+    volumes: *di-volumes
+    depends_on: [di]
+    healthcheck: {disable: true}
+    restart: unless-stopped
+volumes:
+  portal-state:
+  di-state:
+  di-data:

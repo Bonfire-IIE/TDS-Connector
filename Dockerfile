@@ -1,46 +1,42 @@
-# Bonfire-TDS 连接器门户 —— 单制品镜像（web 前端 + server 后端同端口）。
-#
-# 运行前提（部署时提供）：
-#   1) 挂载本机 Lite 的 KusciaAPI 证书目录到容器（默认 LITE_CERT_DIR
-#      = /home/bonfire-tds/src/backend/secrets/kuscia/lite/alice），
-#      目录内含 kusciaapi-server.crt / kusciaapi-server.key / ca.crt / token。
-#        例：-v /host/lite/alice/certs:/certs -e LITE_CERT_DIR=/certs
-#   2) 传入环境变量（无前缀，大小写不敏感）：
-#        PORTAL_DOMAIN_ID / PORTAL_CONNECTOR_ID
-#        LITE_KUSCIA_ENDPOINT / LITE_CERT_DIR / STORAGE_ROOT
-#        PLATFORM_API_BASE / MASTER_ENDPOINT / PORT / WEB_DIST
-#   3) 门户与 Lite 同机部署，需能经 IP 访问本机 Lite KusciaAPI（默认 host 网络）。
-
-# ---- build 阶段：安装全部 workspaces 依赖并构建 web + server ----
-FROM node:20-slim AS build
+# Bonfire Connector Portal: React frontend and Python/FastAPI backend.
+FROM node:24-slim AS web-build
 WORKDIR /app
 
-# 先拷 manifest 以利用缓存（根 + 两个 workspace）
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+
 COPY package.json package-lock.json* ./
 COPY web/package.json ./web/package.json
-COPY server/package.json ./server/package.json
+RUN npm config set proxy "${HTTP_PROXY}" \
+    && npm config set https-proxy "${HTTPS_PROXY}" \
+    && npm ci --workspace web --include-workspace-root \
+    || npm install --workspace web --include-workspace-root
+COPY web ./web
+RUN npm run build --workspace web
 
-# 根 workspaces 安装（含 web/server 依赖）
-RUN npm ci || npm install
-
-# 拷入源码后整体构建（web 先、server 后，见根 package.json build 脚本）
-COPY . .
-RUN npm run build
-
-# ---- runtime 阶段：仅带运行所需产物 ----
-FROM node:20-slim AS runtime
+FROM python:3.12-slim AS runtime
 WORKDIR /app
-ENV NODE_ENV=production
-ENV PORT=8100
-# WEB_DIST 指向镜像内 web 产物（server 默认解析 ../web/dist 亦可命中此布局）
-ENV WEB_DIST=/app/web/dist
 
-# server 运行时依赖（express/axios/dotenv）从根 node_modules 解析
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/server/package.json ./server/package.json
-COPY --from=build /app/server/dist ./server/dist
-COPY --from=build /app/web/dist ./web/dist
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/python \
+    WEB_DIST=/app/web/dist \
+    PORT=8100 \
+    PORTAL_DATA_DIR=/state
 
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+
+COPY pyproject.toml requirements-python.txt ./
+COPY python ./python
+RUN http_proxy="${HTTP_PROXY}" https_proxy="${HTTPS_PROXY}" no_proxy="${NO_PROXY}" \
+    pip install --no-cache-dir -r requirements-python.txt
+COPY --from=web-build /app/web/dist ./web/dist
+
+VOLUME ["/state"]
 EXPOSE 8100
-CMD ["node", "server/dist/index.js"]
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=24 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=2)"
+CMD ["uvicorn", "bonfire_portal.main:app", "--host", "0.0.0.0", "--port", "8100", "--workers", "1"]

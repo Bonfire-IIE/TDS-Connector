@@ -1,5 +1,35 @@
-.data
-.legacy-fastapi-backend
+.data/
+.legacy-fastapi-backend/
 
-**/node_modules
+**/node_modules/
+
+# Python dependencies, caches, test reports and package metadata
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Frontend and server build output
+**/dist/
+**/build/
+*.tsbuildinfo
+
+# Local configuration and credentials (examples are tracked)
+.env
+.env.*
+!.env.example
 server/.env
+*.local.yml
+*.local.yaml
+
+# Local service bindings and credentials (examples are tracked).
+/deploy/portal.env
+/deploy/di.env
+/deploy/service-identities.json
+/deploy/di-identities.json
+/deploy/compute-targets.json

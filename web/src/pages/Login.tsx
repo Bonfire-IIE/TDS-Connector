@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Card, Form, Input, Button, message, Typography } from 'antd'
-import { UserOutlined, LockOutlined } from '@ant-design/icons'
+import { UserOutlined, LockOutlined, FireOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
@@ -31,7 +31,7 @@ export default function Login() {
     <div className="auth-page">
       <Card className="auth-card">
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div className="auth-brand">🔥</div>
+          <div className="auth-brand" aria-hidden="true"><FireOutlined /></div>
           <Title level={3} style={{ marginBottom: 4 }}>
             连接器门户
           </Title>

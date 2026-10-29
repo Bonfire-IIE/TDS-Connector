@@ -1,0 +1,8 @@
+{
+  "kuscia": {
+    "tenant_id": "tenant_a",
+    "connector_id": "edge_a",
+    "host": "kuscia",
+    "port": 2121
+  }
+}
